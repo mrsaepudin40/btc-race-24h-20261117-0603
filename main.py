@@ -75,7 +75,8 @@ def on_batch(state, batch):
             return [{"side": "sell", "symbol": SYMBOL, "qty": qty,
                      "max_slippage_bps": MAX_SLIP_BPS}]
         if _tranches < MAX_TRANCHES and close * 10000 <= avg_entry * (10000 - STEP_BPS):
-            notional = state.cash
+            # Top up with the rest of the cash, never above the weight cap.
+            notional = min(state.cash, state.weight_room(SYMBOL))
             if notional >= MIN_NOTIONAL:
                 _tranches += 1
                 return [{"side": "buy", "symbol": SYMBOL,
