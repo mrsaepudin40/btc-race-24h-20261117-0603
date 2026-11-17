@@ -1,38 +1,49 @@
 """Dip-buy mean-reversion bot for the make.fun BTC race (btc-race-24h-20261117-0603).
 
-Round-2 tuned variant (first-trade bounce + tuned ladder).
-Dev PnL +$44.38 on the kit's 24h dev window (verified end-to-end via the
-local replay harness, 3 identical runs), 11 trades, max drawdown 0.66%,
-fees $2.46. Vs the repo bot (+$34.93) and the round-1 tuned copy (+$38.36).
+Round-3 tuned variant (first-trade bounce + delayed ladder + mature-rally-gated
+depth trailing exit + fast bounce re-entry).
+Dev PnL +$51.53 on the kit's 24h dev window (verified end-to-end via the
+local replay harness, 3 identical runs), 13 trades, max drawdown 0.85%,
+fees $4.09. Vs the submitted bot (+$44.38) and the round-1 tuned copy (+$38.36).
 
-Two phases (both general rules -- no bar indices, prices or dates):
+How it works (all general rules -- no bar indices, prices or dates):
   1. FIRST TRADE -- bounce off the running low. Before any trade has
-     happened, buy the full cash when the close recovers 15 bps above the
+     happened, buy the full cash when the close recovers 10 bps above the
      lowest close seen so far (min 5 bars of history), and sell on a
-     take-profit of +70 bps. On the dev window this catches the opening
-     rally (buy ~bar 17, sell ~bar 99) that every dip-from-high rule misses,
-     because the window opens near its low and there is no prior high to
-     dip from. If no bounce comes within the first 240 bars, fall back to
-     the ladder (never verified to trigger on the dev window -- it does not
-     fire there, so the dev result is unaffected).
-  2. LADDER -- the round-1 tuned config. Tranche 1 buys 38% of cash when
-     the close dips 55 bps below the 240-bar high, after waiting 60 bars
-     from the dip trigger (delayed entry: declines in the dev window take
-     ~55-65 bars to bottom, so the delay lands tranche 1 near the low).
-     Tranche 2 buys the rest if the close falls a further 40 bps below the
-     average entry. Exit on take-profit +180 bps above the average entry;
-     after bar 1000 the take-profit drops to +70 bps.
+     take-profit of +77 bps. Catches the opening rally that every
+     dip-from-high rule misses, because the window opens near its low and
+     there is no prior high to dip from. If no bounce comes within the
+     first 240 bars, fall back to the ladder.
+  2. LADDER -- delayed dip-buy. Tranche 1 buys 38% of cash when the close
+     dips 45 bps below the 300-bar high, on an up bar, after waiting 60
+     bars from the dip trigger (delayed entry: declines take ~55-65 bars
+     to bottom, so the delay lands tranche 1 near the low). An early buy
+     fires if the price falls a further 60 bps below the arm price (fast
+     decline: buy near the low without waiting out the delay). Tranche 2
+     buys the rest if the close falls a further 30 bps below the average
+     entry. Exit on take-profit +190 bps above the average entry; after
+     bar 1100 the take-profit drops to +80 bps.
+  3. TRAILING EXIT -- gated by rally maturity. While holding a ladder
+     position, sell when the close falls 25 bps below the peak since
+     entry -- but only if that peak was made after a long clean rally
+     (bars since the last zigzag-confirmed low >= 90, zigzag threshold
+     30 bps). Pullback tops follow short rallies (12-46 bars) so the
+     gate blocks them; real tops follow 122+ bar rallies. This captures
+     the leg 2/3 split (sell near the bar-314 top, rebuy near the
+     bar-386 low) that plain reversal exits cannot.
+  4. RE-ENTRY -- after a trailing exit, buy the full cash on a fast
+     bounce: arm when the close falls 60 bps below the running high
+     since the exit, buy when it recovers 10 bps above the running low.
+     If no bounce comes within 240 bars, hand back to the ladder.
   - No stop-loss. Long only, at most one open position, at most one order
     per reply, full size (100% of cash across the two tranches).
 
-Honest limits (see scratch/TUNING2.md): $44.38 is still $4.62 below the
-$49 target. The remaining gap is the leg 2/3 split (sell near the bar-314
-top, rebuy near the bar-386 low), which no causal exit rule captures:
-reversal exits either fire on mid-rally pullbacks (which last 29-53 bars
-here, as long as the real decline) or never fire. The first-leg gain sits
-on a narrow plateau (rec 10-15 bps, TP 70 bps; rec 20+ or TP 100 collapses
-it), so it is partly window-specific -- do not expect the same edge on the
-unseen race window.
+Honest limits (see scratch/TUNING3.md): $51.53 is 98.2% of the $52.48
+hindsight-oracle ceiling, so almost no headroom is left on the dev window.
+Several parameters sit near cliffs (step 32 collapses to $30.68, dip 42 to
+$42.63, TP 200 to $33.01, first-TP 80 to $30.14, delay 55 to $43.39) -- the
+$49+ plateau is real (8 configs found) but parts of it are window-specific;
+do not expect the same edge on the unseen race window.
 
 Deterministic: no clock, no network, no files, no randomness. All state is
 the close history kept here plus the account the harness reports each batch.
@@ -48,24 +59,33 @@ SYMBOL = "CBBTC"
 
 # Phase 1 (first trade only): bounce off the running low.
 FIRST_MIN_BARS = 5
-FIRST_REC_BPS = 15
-FIRST_TP_BPS = 70
+FIRST_REC_BPS = 10
+FIRST_TP_BPS = 77
 FIRST_FALLBACK_BAR = 240
-# Phase 2 (ladder): the round-1 tuned config.
-LOOKBACK = 240
-DIP_BPS = 55
+# Phase 2 (ladder): the round-3 tuned config.
+LOOKBACK = 300
+DIP_BPS = 45
 SIZE1_BPS = 3800
 ENTRY_DELAY_BARS = 60
-STEP_BPS = 40
+ARM_DROP_BPS = 60
+STEP_BPS = 30
 MAX_TRANCHES = 2
-TP_BPS = 180
-LATE_BAR = 1000
-LATE_TP_BPS = 70
+TP_BPS = 190
+LATE_BAR = 1100
+LATE_TP_BPS = 80
 # Gating.
 MIN_BARS = 30
-COOLDOWN = 30
+COOLDOWN = 20
 MAX_SLIP_BPS = 100
 MIN_NOTIONAL = 1_000_000
+# Phase 3 (mature-rally-gated trailing exit + fast bounce re-entry).
+TRAIL_BPS = 25
+TRAIL_CONFIRM_BARS = 1
+GATE_BARS = 90
+ZZ_BPS = 30
+RE_GATE_BPS = 60
+RE_REC_BPS = 10
+RE_WINDOW_BARS = 240
 
 _closes = []
 _last_sell_seq = -10 ** 9
@@ -74,15 +94,48 @@ _armed = False
 _arm_low = 0
 _arm_high = 0
 _arm_bar = -1
+_arm_close = 0
 _first_done = False
 _first_run_low = None
 _first_peak = 0
+# Trailing-exit / re-entry state.
+_trail_below = 0
+_trail_peak = 0
+_trail_peak_rally_len = 0
+_prev_qty = 0
+_re_run_low = None
+_re_run_high = None
+_re_mode = False
+_re_since = -10 ** 9
+_re_armed = False
+# Incremental zigzag state (threshold ZZ_BPS).
+_zz_mode = None
+_zz_ext = None
+_zz_ext_bar = 0
+_zz_lo = None
+_zz_lo_bar = 0
+_zz_hi = None
+_zz_hi_bar = 0
+_last_low_bar = 0
+
+
+def _sell_all(qty, seq):
+    global _last_sell_seq, _tranches, _armed
+    _last_sell_seq = seq
+    _tranches = 0
+    _armed = False
+    return [{"side": "sell", "symbol": SYMBOL, "qty": qty,
+             "max_slippage_bps": MAX_SLIP_BPS}]
 
 
 def on_batch(state, batch):
     """Decide the orders for one bar. Returns a list of orders (or [])."""
     global _last_sell_seq, _tranches, _armed, _arm_low, _arm_high, _arm_bar
-    global _first_done, _first_run_low, _first_peak
+    global _arm_close, _first_done, _first_run_low, _first_peak
+    global _trail_below, _trail_peak, _trail_peak_rally_len, _prev_qty
+    global _re_run_low, _re_run_high, _re_mode, _re_since, _re_armed
+    global _zz_mode, _zz_ext, _zz_ext_bar, _zz_lo, _zz_lo_bar
+    global _zz_hi, _zz_hi_bar, _last_low_bar
     if state.warming_up:
         return []
     close = state.close(SYMBOL)
@@ -93,6 +146,61 @@ def on_batch(state, batch):
     holding = state.positions.get(SYMBOL)
     qty = holding.qty if holding else 0
     cost = holding.cost if holding else 0
+
+    # ---- Incremental zigzag (threshold ZZ_BPS) on closes ----
+    if _zz_ext is None:
+        _zz_ext = close
+        _zz_ext_bar = state.seq
+        _zz_lo = close
+        _zz_lo_bar = state.seq
+        _zz_hi = close
+        _zz_hi_bar = state.seq
+    if _zz_mode is None:
+        if close < _zz_lo:
+            _zz_lo = close
+            _zz_lo_bar = state.seq
+        if close > _zz_hi:
+            _zz_hi = close
+            _zz_hi_bar = state.seq
+        if close * 10000 >= _closes[0] * (10000 + ZZ_BPS):
+            _zz_mode = "up"
+            _last_low_bar = _zz_lo_bar
+            _zz_ext = close
+            _zz_ext_bar = state.seq
+        elif close * 10000 <= _closes[0] * (10000 - ZZ_BPS):
+            _zz_mode = "down"
+            _zz_ext = close
+            _zz_ext_bar = state.seq
+    elif _zz_mode == "up":
+        if close > _zz_ext:
+            _zz_ext = close
+            _zz_ext_bar = state.seq
+        elif close * 10000 <= _zz_ext * (10000 - ZZ_BPS):
+            _zz_mode = "down"
+            _zz_ext = close
+            _zz_ext_bar = state.seq
+    else:  # down
+        if close < _zz_ext:
+            _zz_ext = close
+            _zz_ext_bar = state.seq
+        elif close * 10000 >= _zz_ext * (10000 + ZZ_BPS):
+            _zz_mode = "up"
+            _last_low_bar = _zz_ext_bar
+            _zz_ext = close
+            _zz_ext_bar = state.seq
+
+    # ---- Run trackers; reset when we just became flat (a sell filled) ----
+    if _prev_qty > 0 and qty == 0:
+        _re_run_low = close
+        _re_run_high = close
+        _trail_peak = 0
+        _trail_peak_rally_len = 0
+        _trail_below = 0
+    _prev_qty = qty
+    if _re_run_low is None or close < _re_run_low:
+        _re_run_low = close
+    if _re_run_high is None or close > _re_run_high:
+        _re_run_high = close
 
     # ---- Phase 1: first trade (bounce off the running low) ----
     if not _first_done:
@@ -117,6 +225,50 @@ def on_batch(state, batch):
                 notional = min(state.cash, state.weight_room(SYMBOL))
                 if notional >= MIN_NOTIONAL:
                     _first_peak = close
+                    return [{"side": "buy", "symbol": SYMBOL,
+                             "notional_quote_units": notional,
+                             "max_slippage_bps": MAX_SLIP_BPS}]
+            return []
+
+    # ---- Phase 3a: mature-rally-gated trailing exit (ladder positions) ----
+    if qty > 0 and TRAIL_BPS > 0:
+        avg_entry = cost * 10 ** 7 // qty
+        if close > _trail_peak:
+            _trail_peak = close
+            if _zz_mode == "up":
+                _trail_peak_rally_len = state.seq - _last_low_bar
+            else:
+                _trail_peak_rally_len = 0
+        if _trail_peak_rally_len >= GATE_BARS and \
+                close * 10000 <= _trail_peak * (10000 - TRAIL_BPS):
+            _trail_below += 1
+            if _trail_below >= TRAIL_CONFIRM_BARS:
+                _trail_below = 0
+                # Bounce re-entry after a trail exit.
+                _re_mode = True
+                _re_since = state.seq
+                _re_armed = False
+                return _sell_all(qty, state.seq)
+        else:
+            _trail_below = 0
+
+    # ---- Phase 3b: fast bounce re-entry after a trail exit ----
+    if _re_mode and qty == 0:
+        if state.seq - _re_since > RE_WINDOW_BARS:
+            _re_mode = False
+        else:
+            if not _re_armed:
+                if _re_run_high and \
+                        close * 10000 <= _re_run_high * (10000 - RE_GATE_BPS):
+                    _re_armed = True
+                return []
+            if close * 10000 >= (_re_run_low or close) * (10000 + RE_REC_BPS):
+                notional = min(state.cash, state.weight_room(SYMBOL))
+                if notional >= MIN_NOTIONAL:
+                    _re_mode = False
+                    _re_armed = False
+                    _trail_peak = close
+                    _tranches = 1
                     return [{"side": "buy", "symbol": SYMBOL,
                              "notional_quote_units": notional,
                              "max_slippage_bps": MAX_SLIP_BPS}]
@@ -153,17 +305,22 @@ def on_batch(state, batch):
     if n >= 2 and close <= _closes[-2]:
         return []
     # Delayed entry: arm on the dip trigger, wait ENTRY_DELAY_BARS, then buy
-    # only if the dip condition still holds.
+    # only if the dip condition still holds. An early buy fires if the price
+    # falls a further ARM_DROP_BPS below the arm price (fast decline: buy
+    # near the low without waiting out the delay).
     if not _armed:
         _armed = True
         _arm_low = close
         _arm_high = high
         _arm_bar = state.seq
+        _arm_close = close
         return []
     if close * 10000 > _arm_high * (10000 - DIP_BPS):
         _armed = False
         return []
-    if state.seq - _arm_bar < ENTRY_DELAY_BARS:
+    early = (ARM_DROP_BPS > 0 and
+             close * 10000 <= _arm_close * (10000 - ARM_DROP_BPS))
+    if not early and state.seq - _arm_bar < ENTRY_DELAY_BARS:
         return []
     notional = state.cash * SIZE1_BPS // 10000
     if notional < MIN_NOTIONAL:
